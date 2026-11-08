@@ -23,23 +23,16 @@ final class AppState: ObservableObject {
 
     private init() {}
 
-    // Called when SpotifyAuth gets a valid PKCE token AND when web player intercepts its own token
+    // Called by SpotifyWebEngine when a Bearer token is intercepted from the web player
     func onTokenReceived(_ token: String) async {
         api.setToken(token)
         isLoggedIn = true
-
-        // Load web player so it signs in with this session
-        SpotifyWebEngine.shared.loadWebPlayer()
 
         if userPlaylists.isEmpty {
             loadTask?.cancel()
             loadTask = Task { await loadLibrary() }
         }
         startPolling()
-    }
-
-    func onWebPlayerReady() {
-        webPlayerReady = true
     }
 
     func resetState() {
@@ -52,7 +45,6 @@ final class AppState: ObservableObject {
         userPlaylists = []
         pollTask?.cancel()
         loadTask?.cancel()
-        SpotifyWebEngine.shared.reset()
     }
 
     private func loadLibrary() async {
@@ -77,7 +69,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Playback (via JS injection into hidden web player)
+    // MARK: - Playback (via JS injection into the web player)
 
     func play(track: STrack) async {
         currentTrack = track

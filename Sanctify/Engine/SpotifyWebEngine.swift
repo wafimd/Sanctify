@@ -1,14 +1,11 @@
 import WebKit
 
-// Injected at document start.
-// 1. Intercepts fetch/XHR to capture Bearer tokens.
-// 2. Exposes sanctifyPlay/Toggle/Next/Prev that drive the internal player.
 private let kInterceptJS = """
 (function() {
-    // --- Token capture ---
     function emit(token) {
         try { window.webkit.messageHandlers.sanctify.postMessage({ type: 'token', value: token }); } catch(e) {}
     }
+    // Intercept fetch
     const _fetch = window.fetch;
     window.fetch = function(input, init) {
         try {
@@ -19,59 +16,13 @@ private let kInterceptJS = """
         } catch(e) {}
         return _fetch.apply(this, arguments);
     };
+    // Intercept XHR
     const _setHeader = XMLHttpRequest.prototype.setRequestHeader;
     XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
         if (name.toLowerCase() === 'authorization' && value.startsWith('Bearer ')) emit(value.slice(7));
         return _setHeader.apply(this, arguments);
     };
-
-    // --- Playback helpers ---
-    // Spotify's web player exposes a global player instance via the Spotify Connect state.
-    // We try several known access patterns in order of reliability.
-    function getPlayer() {
-        // Pattern 1: Spotify SDK window object (web player registers here)
-        if (window.Spotify && window.Spotify.Player) {
-            var instances = window.Spotify.Player._instances;
-            if (instances && instances.length) return instances[0];
-        }
-        // Pattern 2: SpotifyApi on window
-        if (window.SpotifyApi) return window.SpotifyApi;
-        return null;
-    }
-
-    // Drive playback via keyboard shortcuts as reliable fallback
-    function pressKey(code) {
-        var e = new KeyboardEvent('keydown', { key: code, code: code, bubbles: true });
-        document.dispatchEvent(e);
-    }
-
-    window.sanctifyPlay = function(uri) {
-        try {
-            // Try Spotify Connect REST via page's own fetch (uses its session, works on free)
-            fetch('https://api.spotify.com/v1/me/player/play', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ uris: [uri] })
-            });
-        } catch(e) {}
-    };
-
-    window.sanctifyToggle = function() {
-        pressKey('Space');
-    };
-
-    window.sanctifyNext = function() {
-        pressKey('ArrowRight');
-        // Also try media key
-        try { pressKey('MediaTrackNext'); } catch(e) {}
-    };
-
-    window.sanctifyPrev = function() {
-        pressKey('ArrowLeft');
-        try { pressKey('MediaTrackPrevious'); } catch(e) {}
-    };
-
-    // Poll localStorage for token fallback
+    // Poll localStorage as fallback
     function pollStorage() {
         try {
             for (var i = 0; i < localStorage.length; i++) {
@@ -92,14 +43,28 @@ private let kInterceptJS = """
         } catch(e) {}
     }
     window.addEventListener('load', function() {
+        pollStorage();
         var interval = setInterval(function() { pollStorage(); }, 2000);
         setTimeout(function() { clearInterval(interval); }, 120000);
-
-        // Signal native side that the player UI is ready
-        setTimeout(function() {
-            try { window.webkit.messageHandlers.sanctify.postMessage({ type: 'ready' }); } catch(e) {}
-        }, 4000);
     });
+
+    // Playback helpers — drive the web player internally
+    window.sanctifyToggle = function() {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true }));
+    };
+    window.sanctifyNext = function() {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', bubbles: true }));
+    };
+    window.sanctifyPrev = function() {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', code: 'ArrowLeft', bubbles: true }));
+    };
+    window.sanctifyPlay = function(uri) {
+        // Best-effort: dispatch to internal Spotify player state if accessible
+        try {
+            var evt = new CustomEvent('sanctify:play', { detail: { uri: uri }, bubbles: true });
+            document.dispatchEvent(evt);
+        } catch(e) {}
+    };
 })();
 """
 
@@ -108,14 +73,16 @@ final class SpotifyWebEngine: NSObject, ObservableObject {
     static let shared = SpotifyWebEngine()
 
     @Published var webPlayerReady = false
+    @Published var pageLoaded = false
 
     private(set) var webView: WKWebView!
     private var lastToken: String?
-    private var hasLoaded = false
 
     private override init() {
         super.init()
         setupWebView()
+        // Load immediately so web player can auth from cached cookies
+        webView.load(URLRequest(url: URL(string: "https://open.spotify.com")!))
     }
 
     private func setupWebView() {
@@ -138,29 +105,11 @@ final class SpotifyWebEngine: NSObject, ObservableObject {
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
     }
 
-    func loadWebPlayer() {
-        guard !hasLoaded else { return }
-        hasLoaded = true
-        webView.load(URLRequest(url: URL(string: "https://open.spotify.com")!))
-    }
-
-    func reset() {
-        webPlayerReady = false
-        hasLoaded = false
-        lastToken = nil
-        webView.load(URLRequest(url: URL(string: "about:blank")!))
-    }
-
     private func onToken(_ token: String) {
         guard token != lastToken, token.count > 50 else { return }
         lastToken = token
-        // Token from web player — update API client but don't loop back to loadWebPlayer
-        AppState.shared.api.setToken(token)
-    }
-
-    private func onPlayerReady() {
         webPlayerReady = true
-        AppState.shared.onWebPlayerReady()
+        Task { await AppState.shared.onTokenReceived(token) }
     }
 }
 
@@ -168,21 +117,15 @@ extension SpotifyWebEngine: WKScriptMessageHandler {
     nonisolated func userContentController(_ userContentController: WKUserContentController,
                                            didReceive message: WKScriptMessage) {
         guard message.name == "sanctify",
-              let body = message.body as? [String: Any] else { return }
-        let type = body["type"] as? String
-        Task { @MainActor in
-            switch type {
-            case "token":
-                if let value = body["value"] as? String { self.onToken(value) }
-            case "ready":
-                self.onPlayerReady()
-            default:
-                break
-            }
-        }
+              let body = message.body as? [String: Any],
+              body["type"] as? String == "token",
+              let value = body["value"] as? String else { return }
+        Task { @MainActor in self.onToken(value) }
     }
 }
 
 extension SpotifyWebEngine: WKNavigationDelegate {
-    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {}
+    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        Task { @MainActor in self.pageLoaded = true }
+    }
 }

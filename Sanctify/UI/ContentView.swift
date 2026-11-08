@@ -8,31 +8,37 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            // Web player always lives here, hidden once ready — audio engine
+            // Web player: full-screen visible while loading (user may need to sign in),
+            // then collapses to 1×1 background once ready.
             SpotifyWebViewWrapper(webView: engine.webView)
                 .frame(
-                    width:  engine.webPlayerReady ? 1 : 0,
-                    height: engine.webPlayerReady ? 1 : 0
+                    width:  engine.webPlayerReady ? 1 : nil,
+                    height: engine.webPlayerReady ? 1 : nil
                 )
-                .opacity(0)
-                .allowsHitTesting(false)
+                .opacity(engine.webPlayerReady ? 0 : 1)
+                .allowsHitTesting(!engine.webPlayerReady)
+                .ignoresSafeArea()
 
             if !auth.isAuthenticated {
+                // PKCE login screen on top of web player
                 LoginView()
                     .transition(.opacity)
             } else if !engine.webPlayerReady {
-                // Authenticated but web player still loading
-                ZStack {
-                    Color.black.ignoresSafeArea()
-                    VStack(spacing: 16) {
-                        ProgressView()
-                            .tint(.white)
-                        Text("Loading player…")
-                            .font(.system(size: 14))
-                            .foregroundColor(.white.opacity(0.5))
+                // Web player is visible beneath — show a label so user knows what to do
+                VStack {
+                    HStack {
+                        Spacer()
+                        Text(engine.pageLoaded ? "Sign in to Spotify to continue" : "Loading…")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(.top, 56)
+                        Spacer()
                     }
+                    Spacer()
                 }
-                .transition(.opacity)
             } else {
                 MainView()
                     .environmentObject(state)
