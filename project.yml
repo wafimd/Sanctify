@@ -28,6 +28,10 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSMicrophoneUsageDescription: ""
+        CFBundleURLTypes:
+          - CFBundleURLSchemes:
+              - sanctify
+            CFBundleURLName: com.wafi.Sanctify
         CFBundleIcons:
           CFBundlePrimaryIcon:
             CFBundleIconName: AppIcon

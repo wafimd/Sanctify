@@ -5,7 +5,6 @@ import Combine
 final class AppState: ObservableObject {
     static let shared = AppState()
 
-    // Auth / engine
     @Published var isLoggedIn = false
     @Published var webPlayerReady = false
 
@@ -13,14 +12,10 @@ final class AppState: ObservableObject {
     @Published var currentTrack: STrack?
     @Published var isPlaying = false
     @Published var progressMs: Int = 0
-    @Published var webPlayerDeviceId: String?
 
     // Library
     @Published var featured: [SPlaylist] = []
     @Published var userPlaylists: [SPlaylist] = []
-
-    // UI state
-    @Published var showNowPlaying = false
 
     let api = SpotifyAPI()
     private var pollTask: Task<Void, Never>?
@@ -28,34 +23,36 @@ final class AppState: ObservableObject {
 
     private init() {}
 
+    // Called when SpotifyAuth gets a valid PKCE token AND when web player intercepts its own token
     func onTokenReceived(_ token: String) async {
         api.setToken(token)
-        webPlayerReady = true
         isLoggedIn = true
 
-        // Find the web player device (registered by our hidden WKWebView)
-        await resolveWebPlayerDevice()
+        // Load web player so it signs in with this session
+        SpotifyWebEngine.shared.loadWebPlayer()
 
-        // Load library data once
         if userPlaylists.isEmpty {
             loadTask?.cancel()
             loadTask = Task { await loadLibrary() }
         }
-
-        // Start polling current track
         startPolling()
     }
 
-    private func resolveWebPlayerDevice() async {
-        // Retry a few times — web player may take a moment to register
-        for _ in 0..<5 {
-            let devices = await api.fetchDevices()
-            if let device = devices.first(where: { $0.type == "Computer" || $0.name.contains("Web Player") }) {
-                webPlayerDeviceId = device.id
-                return
-            }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-        }
+    func onWebPlayerReady() {
+        webPlayerReady = true
+    }
+
+    func resetState() {
+        webPlayerReady = false
+        isLoggedIn = false
+        currentTrack = nil
+        isPlaying = false
+        progressMs = 0
+        featured = []
+        userPlaylists = []
+        pollTask?.cancel()
+        loadTask?.cancel()
+        SpotifyWebEngine.shared.reset()
     }
 
     private func loadLibrary() async {
@@ -80,42 +77,29 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Playback actions
+    // MARK: - Playback (via JS injection into hidden web player)
 
     func play(track: STrack) async {
         currentTrack = track
         isPlaying = true
-        await api.play(uri: track.uri, deviceId: webPlayerDeviceId)
+        await webJS("window.sanctifyPlay(\(jsonString(track.uri)))")
     }
 
     func togglePlayPause() async {
-        if isPlaying {
-            await api.pause(deviceId: webPlayerDeviceId)
-            isPlaying = false
-        } else {
-            if let track = currentTrack {
-                await api.play(uri: track.uri, deviceId: webPlayerDeviceId)
-                isPlaying = true
-            }
-        }
+        await webJS("window.sanctifyToggle()")
+        isPlaying.toggle()
     }
 
     func skipNext() async {
-        await api.skipNext(deviceId: webPlayerDeviceId)
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        if let state = await api.fetchCurrentTrack() {
-            currentTrack = state.item
-            isPlaying = state.isPlaying
-        }
+        await webJS("window.sanctifyNext()")
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        await refreshTrack()
     }
 
     func skipPrevious() async {
-        await api.skipPrevious(deviceId: webPlayerDeviceId)
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        if let state = await api.fetchCurrentTrack() {
-            currentTrack = state.item
-            isPlaying = state.isPlaying
-        }
+        await webJS("window.sanctifyPrev()")
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        await refreshTrack()
     }
 
     func search(_ query: String) async -> [STrack] {
@@ -124,5 +108,26 @@ final class AppState: ObservableObject {
 
     func playlistTracks(_ id: String) async -> [STrack] {
         await api.fetchPlaylistTracks(id)
+    }
+
+    private func refreshTrack() async {
+        if let state = await api.fetchCurrentTrack() {
+            currentTrack = state.item
+            isPlaying = state.isPlaying
+        }
+    }
+
+    private func webJS(_ js: String) async {
+        await withCheckedContinuation { cont in
+            SpotifyWebEngine.shared.webView.evaluateJavaScript(js) { _, _ in
+                cont.resume()
+            }
+        }
+    }
+
+    private func jsonString(_ s: String) -> String {
+        let escaped = s.replacingOccurrences(of: "\\", with: "\\\\")
+                       .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 }
