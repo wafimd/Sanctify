@@ -2,49 +2,27 @@
 #import <objc/runtime.h>
 
 // ── Token capture ─────────────────────────────────────────────────────────────
+// No probe validation — just grab the first Bearer token from any *.spotify.com
+// request. If an API call returns 401 we'll refresh on the next token change.
 
 static NSString *gToken = nil;
-static NSMutableSet *gSeenTokens = nil;
-
-// Capture Bearer tokens from every *.spotify.com request.
-// Validate each new token against the Web API; keep the first that returns 200.
-static void tryToken(NSString *tok) {
-    if (!tok || [gSeenTokens containsObject:tok]) return;
-    [gSeenTokens addObject:tok];
-
-    NSURL *url = [NSURL URLWithString:@"https://api.spotify.com/v1/me"];
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    [req setValue:[NSString stringWithFormat:@"Bearer %@", tok]
-       forHTTPHeaderField:@"Authorization"];
-    // tag so our hook ignores this probe
-    [req setValue:@"1" forHTTPHeaderField:@"X-Sanctify-Probe"];
-
-    NSURLSession *s = [NSURLSession sharedSession];
-    [[s dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-        NSHTTPURLResponse *http = (NSHTTPURLResponse *)r;
-        if (http.statusCode == 200 && !gToken) {
-            gToken = tok;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter]
-                    postNotificationName:@"SanctifyTokenReady" object:nil];
-            });
-        }
-    }] resume];
-}
 
 typedef NSURLSessionDataTask *(*dataTaskIMP)(id, SEL, NSURLRequest *, void(^)(NSData*, NSURLResponse*, NSError*));
 static dataTaskIMP orig_dataTask;
 
 static NSURLSessionDataTask *hook_dataTask(id self, SEL _cmd, NSURLRequest *req,
                                             void (^handler)(NSData*, NSURLResponse*, NSError*)) {
-    // Skip our own probe requests
-    if (![req valueForHTTPHeaderField:@"X-Sanctify-Probe"]) {
-        NSString *host = req.URL.host;
-        if ([host hasSuffix:@"spotify.com"]) {
-            NSString *auth = [req valueForHTTPHeaderField:@"Authorization"];
-            if ([auth hasPrefix:@"Bearer "]) {
-                NSString *tok = [auth substringFromIndex:7];
-                dispatch_async(dispatch_get_global_queue(0, 0), ^{ tryToken(tok); });
+    NSString *host = req.URL.host;
+    if ([host hasSuffix:@"spotify.com"]) {
+        NSString *auth = [req valueForHTTPHeaderField:@"Authorization"];
+        if ([auth hasPrefix:@"Bearer "]) {
+            NSString *tok = [auth substringFromIndex:7];
+            if (![tok isEqualToString:gToken]) {
+                gToken = tok;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:@"SanctifyTokenReady" object:nil];
+                });
             }
         }
     }
@@ -52,7 +30,6 @@ static NSURLSessionDataTask *hook_dataTask(id self, SEL _cmd, NSURLRequest *req,
 }
 
 static void installTokenHook(void) {
-    gSeenTokens = [NSMutableSet new];
     Class cls = [[NSURLSession sharedSession] class];
     SEL sel = @selector(dataTaskWithRequest:completionHandler:);
     Method m = class_getInstanceMethod(cls, sel);
@@ -101,7 +78,6 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
 - (void)configure:(NSDictionary *)item {
     self.textLabel.text = item[@"name"];
 
-    // subtitle: artist names or owner
     NSArray *artists = item[@"artists"];
     NSDictionary *owner = item[@"owner"];
     if (artists.count)
@@ -111,7 +87,6 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
     else
         self.detailTextLabel.text = item[@"type"];
 
-    // thumbnail
     NSArray *images = item[@"images"] ?: item[@"album"][@"images"];
     NSString *imgUrl = [images lastObject][@"url"] ?: [images firstObject][@"url"];
     if (imgUrl) {
@@ -168,9 +143,7 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
     });
 }
 
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    return self.rows.count;
-}
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s { return self.rows.count; }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
     SanctifyCell *cell = [tv dequeueReusableCellWithIdentifier:@"cell" forIndexPath:ip];
@@ -180,7 +153,7 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
 
 @end
 
-// ── Home VC (recently played + top artists) ───────────────────────────────────
+// ── Home VC ───────────────────────────────────────────────────────────────────
 
 @interface SanctifyHomeVC : UIViewController
 @property (nonatomic) UIScrollView *scroll;
@@ -211,18 +184,7 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
 
 - (void)addSection:(NSString *)title items:(NSArray *)rawItems keyPath:(NSString *)kp {
     NSArray *items = kp ? [rawItems valueForKeyPath:kp] : rawItems;
-
-    // section label
-    UILabel *hdr = [UILabel new];
-    hdr.text = title;
-    hdr.textColor = [UIColor whiteColor];
-    hdr.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
-    hdr.translatesAutoresizingMaskIntoConstraints = NO;
-
-    // horizontal scroll of thumbnails
-    UIScrollView *row = [[UIScrollView alloc] init];
-    row.showsHorizontalScrollIndicator = NO;
-    row.translatesAutoresizingMaskIntoConstraints = NO;
+    if (!items.count) return;
 
     if (!self.scroll) {
         self.scroll = [[UIScrollView alloc] initWithFrame:self.view.bounds];
@@ -230,12 +192,14 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
         [self.view addSubview:self.scroll];
     }
 
-    // Simple stack-based layout
     CGFloat y = self.scroll.subviews.lastObject ?
-        CGRectGetMaxY(self.scroll.subviews.lastObject.frame) + 8 : 16;
+        CGRectGetMaxY([(UIView *)self.scroll.subviews.lastObject frame]) + 8 : 16;
     CGFloat W = self.view.bounds.size.width;
 
-    hdr.frame = CGRectMake(16, y, W - 32, 28);
+    UILabel *hdr = [[UILabel alloc] initWithFrame:CGRectMake(16, y, W - 32, 28)];
+    hdr.text = title;
+    hdr.textColor = [UIColor whiteColor];
+    hdr.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
     [self.scroll addSubview:hdr];
     y += 36;
 
@@ -259,9 +223,7 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
             NSURL *u = [NSURL URLWithString:imgUrl];
             dispatch_async(dispatch_get_global_queue(0, 0), ^{
                 NSData *d = [NSData dataWithContentsOfURL:u];
-                if (d) dispatch_async(dispatch_get_main_queue(), ^{
-                    img.image = [UIImage imageWithData:d];
-                });
+                if (d) dispatch_async(dispatch_get_main_queue(), ^{ img.image = [UIImage imageWithData:d]; });
             });
         }
 
@@ -286,8 +248,7 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
 static UINavigationController *navWrap(UIViewController *vc, NSString *title, NSString *icon) {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.tabBarItem = [[UITabBarItem alloc] initWithTitle:title
-                                                   image:[UIImage systemImageNamed:icon]
-                                                     tag:0];
+                                                   image:[UIImage systemImageNamed:icon] tag:0];
     nav.navigationBar.prefersLargeTitles = YES;
     UINavigationBarAppearance *a = [UINavigationBarAppearance new];
     [a configureWithOpaqueBackground];
@@ -333,54 +294,11 @@ static UINavigationController *navWrap(UIViewController *vc, NSString *title, NS
 
 @end
 
-// ── Launch button (first-run) ─────────────────────────────────────────────────
-
-static UIWindow *gLaunchWin = nil;
-
-static void showLaunchButton(void) {
-    UIWindowScene *scene = nil;
-    for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
-        if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
-    if (!scene) return;
-
-    gLaunchWin = [[UIWindow alloc] initWithWindowScene:scene];
-    gLaunchWin.windowLevel = UIWindowLevelStatusBar - 1;
-    gLaunchWin.backgroundColor = [UIColor clearColor];
-    gLaunchWin.rootViewController = [UIViewController new];
-    [gLaunchWin makeKeyAndVisible];
-
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.frame = CGRectMake(16, 56, 148, 40);
-    btn.backgroundColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:0.95];
-    btn.layer.cornerRadius = 20;
-    btn.layer.shadowColor = [UIColor blackColor].CGColor;
-    btn.layer.shadowOpacity = 0.4;
-    btn.layer.shadowRadius = 6;
-    [btn setTitle:@"⚡ Open Sanctify" forState:UIControlStateNormal];
-    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-
-    __block UIButton *weakBtn = btn;
-    [btn addAction:[UIAction actionWithHandler:^(UIAction *a) {
-        (void)weakBtn;
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"SanctifyAutoLaunch"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-        gLaunchWin = nil;
-        // takeOver is safe to call now — token is already confirmed
-        dispatch_async(dispatch_get_main_queue(), ^{
-            extern void sanctifyTakeOver(void);
-            sanctifyTakeOver();
-        });
-    }] forControlEvents:UIControlEventTouchUpInside];
-
-    [gLaunchWin addSubview:btn];
-}
-
-// ── Entry point ───────────────────────────────────────────────────────────────
+// ── Takeover ──────────────────────────────────────────────────────────────────
 
 static BOOL gTookOver = NO;
 
-void sanctifyTakeOver(void) {
+static void sanctifyTakeOver(void) {
     if (gTookOver) return;
     gTookOver = YES;
 
@@ -394,25 +312,68 @@ void sanctifyTakeOver(void) {
     if (!win) win = scene.windows.firstObject;
     if (!win) return;
 
-    gLaunchWin = nil;
     win.rootViewController = [SanctifyRootVC new];
 }
+
+// ── Settings injection ────────────────────────────────────────────────────────
+// Hook SPTSettingsViewController to add an "Open Sanctify" row in Spotify's
+// own settings, exactly like EeveeSpotify does.
+
+@interface SanctifyLauncher : NSObject
++ (instancetype)shared;
+- (void)openSanctify;
+@end
+
+@implementation SanctifyLauncher
++ (instancetype)shared {
+    static SanctifyLauncher *s;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ s = [SanctifyLauncher new]; });
+    return s;
+}
+- (void)openSanctify {
+    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"SanctifyAutoLaunch"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    sanctifyTakeOver();
+}
+@end
+
+static void hookSpotifySettings(void) {
+    Class cls = NSClassFromString(@"SPTSettingsViewController");
+    if (!cls) return;
+
+    SEL sel = @selector(viewDidLoad);
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+
+    IMP orig = method_getImplementation(m);
+    IMP hook = imp_implementationWithBlock(^(UIViewController *self) {
+        ((void (*)(id, SEL))orig)(self, sel);
+
+        UIBarButtonItem *btn = [[UIBarButtonItem alloc]
+            initWithTitle:@"⚡ Sanctify"
+                    style:UIBarButtonItemStylePlain
+                   target:[SanctifyLauncher shared]
+                   action:@selector(openSanctify)];
+        btn.tintColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:1.0];
+        self.navigationItem.rightBarButtonItem = btn;
+    });
+    method_setImplementation(m, hook);
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 __attribute__((constructor))
 static void SanctifyInit(void) {
     installTokenHook();
+    hookSpotifySettings();
 
     [[NSNotificationCenter defaultCenter]
         addObserverForName:@"SanctifyTokenReady"
         object:nil
         queue:[NSOperationQueue mainQueue]
         usingBlock:^(NSNotification *n) {
-            BOOL autoLaunch = [[NSUserDefaults standardUserDefaults]
-                               boolForKey:@"SanctifyAutoLaunch"];
-            if (autoLaunch) {
+            if ([[NSUserDefaults standardUserDefaults] boolForKey:@"SanctifyAutoLaunch"])
                 sanctifyTakeOver();
-            } else {
-                showLaunchButton();
-            }
         }];
 }
