@@ -66,10 +66,15 @@ jobs:
       - name: Inject dylib into Spotify binary
         run: |
           APP="extracted/Payload/Spotify.app"
+          mkdir -p "$APP/Frameworks"
           cp SanctifyTweak.dylib "$APP/Frameworks/"
           ./insert_dylib_bin --strip-codesig \
             @executable_path/Frameworks/SanctifyTweak.dylib \
             "$APP/Spotify"
+          echo "=== Load commands check ==="
+          otool -l "$APP/Spotify" | grep -A2 SanctifyTweak || echo "WARNING: load command not found"
+          echo "=== Frameworks dir ==="
+          ls -lh "$APP/Frameworks/" | grep Sanctify
 
       - name: Repackage IPA
         run: |
