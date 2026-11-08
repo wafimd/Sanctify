@@ -35,13 +35,14 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
-            clean build \
-            CONFIGURATION_BUILD_DIR="$(pwd)/build/Release-iphoneos" \
-            | xcpretty || true
+            SYMROOT="$(pwd)/build" \
+            clean build
 
       - name: Package IPA
         run: |
-          APP=$(find build/Release-iphoneos -name "*.app" | head -1)
+          APP=$(find build -name "*.app" -not -path "*/Build/Intermediates*" | head -1)
+          [ -z "$APP" ] && echo "::error::No .app found after build" && exit 1
+          echo "Packaging: $APP"
           mkdir -p Payload
           cp -r "$APP" Payload/
           zip -qr Sanctify.ipa Payload/
