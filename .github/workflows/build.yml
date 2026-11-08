@@ -1,0 +1,54 @@
+name: Build Sanctify IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          XCODE=$(ls /Applications/ | grep -E '^Xcode' | sort -V | tail -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (no codesign)
+        run: |
+          xcodebuild \
+            -project Sanctify.xcodeproj \
+            -scheme Sanctify \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            clean build \
+            CONFIGURATION_BUILD_DIR="$(pwd)/build/Release-iphoneos" \
+            | xcpretty || true
+
+      - name: Package IPA
+        run: |
+          APP=$(find build/Release-iphoneos -name "*.app" | head -1)
+          mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -qr Sanctify.ipa Payload/
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sanctify-${{ github.run_number }}
+          path: Sanctify.ipa
+          retention-days: 30

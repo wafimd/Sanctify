@@ -1,0 +1,40 @@
+name: Sanctify
+options:
+  bundleIdPrefix: com.wafi
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  xcodeVersion: "15.0"
+
+targets:
+  Sanctify:
+    type: application
+    platform: iOS
+    sources:
+      - Sanctify
+    info:
+      path: Sanctify/Info.plist
+      properties:
+        CFBundleDisplayName: Sanctify
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSupportsIndirectInputEvents: true
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIViewControllerBasedStatusBarAppearance: false
+        UIBackgroundModes:
+          - audio
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSMicrophoneUsageDescription: ""
+    settings:
+      SWIFT_VERSION: "5.9"
+      PRODUCT_BUNDLE_IDENTIFIER: com.wafi.Sanctify
+      TARGETED_DEVICE_FAMILY: "1"
+      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+      ENABLE_BITCODE: "NO"
+      DEBUG_INFORMATION_FORMAT: dwarf
+      CODE_SIGN_IDENTITY: ""
+      CODE_SIGNING_REQUIRED: "NO"
+      CODE_SIGNING_ALLOWED: "NO"
