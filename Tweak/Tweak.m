@@ -333,11 +333,54 @@ static UINavigationController *navWrap(UIViewController *vc, NSString *title, NS
 
 @end
 
+// ── Launch button (first-run) ─────────────────────────────────────────────────
+
+static UIWindow *gLaunchWin = nil;
+
+static void showLaunchButton(void) {
+    UIWindowScene *scene = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
+        if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
+    if (!scene) return;
+
+    gLaunchWin = [[UIWindow alloc] initWithWindowScene:scene];
+    gLaunchWin.windowLevel = UIWindowLevelStatusBar - 1;
+    gLaunchWin.backgroundColor = [UIColor clearColor];
+    gLaunchWin.rootViewController = [UIViewController new];
+    [gLaunchWin makeKeyAndVisible];
+
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    btn.frame = CGRectMake(16, 56, 148, 40);
+    btn.backgroundColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:0.95];
+    btn.layer.cornerRadius = 20;
+    btn.layer.shadowColor = [UIColor blackColor].CGColor;
+    btn.layer.shadowOpacity = 0.4;
+    btn.layer.shadowRadius = 6;
+    [btn setTitle:@"⚡ Open Sanctify" forState:UIControlStateNormal];
+    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+
+    __block UIButton *weakBtn = btn;
+    [btn addAction:[UIAction actionWithHandler:^(UIAction *a) {
+        (void)weakBtn;
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"SanctifyAutoLaunch"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        gLaunchWin = nil;
+        // takeOver is safe to call now — token is already confirmed
+        dispatch_async(dispatch_get_main_queue(), ^{
+            extern void sanctifyTakeOver(void);
+            sanctifyTakeOver();
+        });
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    [gLaunchWin addSubview:btn];
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 static BOOL gTookOver = NO;
 
-static void takeOver(void) {
+void sanctifyTakeOver(void) {
     if (gTookOver) return;
     gTookOver = YES;
 
@@ -351,17 +394,25 @@ static void takeOver(void) {
     if (!win) win = scene.windows.firstObject;
     if (!win) return;
 
+    gLaunchWin = nil;
     win.rootViewController = [SanctifyRootVC new];
 }
 
 __attribute__((constructor))
 static void SanctifyInit(void) {
     installTokenHook();
-    // Take over only after a valid token is confirmed — lets Spotify's
-    // login flow complete first so the session is live when our UI appears.
+
     [[NSNotificationCenter defaultCenter]
         addObserverForName:@"SanctifyTokenReady"
         object:nil
         queue:[NSOperationQueue mainQueue]
-        usingBlock:^(NSNotification *n) { takeOver(); }];
+        usingBlock:^(NSNotification *n) {
+            BOOL autoLaunch = [[NSUserDefaults standardUserDefaults]
+                               boolForKey:@"SanctifyAutoLaunch"];
+            if (autoLaunch) {
+                sanctifyTakeOver();
+            } else {
+                showLaunchButton();
+            }
+        }];
 }
