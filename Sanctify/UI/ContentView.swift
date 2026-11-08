@@ -18,18 +18,21 @@ struct RootView: View {
                 .ignoresSafeArea()
 
             if !engine.webPlayerReady {
-                // Login prompt overlay
-                VStack(spacing: 16) {
+                // Status bar area label so user knows what the web view is for
+                VStack {
+                    HStack {
+                        Spacer()
+                        Text(engine.pageLoaded ? "Sign in to Spotify to continue" : "Loading…")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(.top, 56)
+                        Spacer()
+                    }
                     Spacer()
-                    Text("Sanctify")
-                        .font(.system(size: 32, weight: .bold))
-                        .foregroundColor(.white)
-                    Text("Sign in to Spotify above to continue")
-                        .font(.system(size: 15))
-                        .foregroundColor(.white.opacity(0.5))
-                    Spacer().frame(height: 40)
                 }
-                .background(Color.black.opacity(0.0))
             } else {
                 MainView()
                     .environmentObject(state)
