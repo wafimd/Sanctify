@@ -49,8 +49,16 @@ jobs:
 
       - name: Download Spotify IPA
         run: |
-          curl -L "${{ github.event.inputs.ipa_url }}" -o Spotify.ipa
+          curl -L --fail -A "Mozilla/5.0" "${{ github.event.inputs.ipa_url }}" -o Spotify.ipa
           ls -lh Spotify.ipa
+          file Spotify.ipa
+          # Verify it's actually a zip/IPA
+          python3 -c "
+          with open('Spotify.ipa','rb') as f:
+              sig = f.read(4)
+          assert sig == b'PK\x03\x04', f'Not a zip: first 4 bytes = {sig!r}'
+          print('ZIP signature OK')
+          "
 
       - name: Extract IPA
         run: unzip -o Spotify.ipa -d extracted > /dev/null
