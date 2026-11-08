@@ -55,10 +55,10 @@ struct SearchView: View {
             Spacer()
         }
         .background(Color.black.ignoresSafeArea())
-        .onChange(of: query) { _, _ in
+        .onChange(of: query) { newValue in
             Task {
                 try? await Task.sleep(nanoseconds: 400_000_000)
-                guard !query.isEmpty else { results = []; return }
+                guard !newValue.isEmpty else { results = []; return }
                 await runSearch()
             }
         }
