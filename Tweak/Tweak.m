@@ -335,7 +335,12 @@ static UINavigationController *navWrap(UIViewController *vc, NSString *title, NS
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+static BOOL gTookOver = NO;
+
 static void takeOver(void) {
+    if (gTookOver) return;
+    gTookOver = YES;
+
     UIWindowScene *scene = nil;
     for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
         if ([s isKindOfClass:[UIWindowScene class]]) { scene = (UIWindowScene *)s; break; }
@@ -352,9 +357,11 @@ static void takeOver(void) {
 __attribute__((constructor))
 static void SanctifyInit(void) {
     installTokenHook();
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(),
-        ^{ takeOver(); }
-    );
+    // Take over only after a valid token is confirmed — lets Spotify's
+    // login flow complete first so the session is live when our UI appears.
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:@"SanctifyTokenReady"
+        object:nil
+        queue:[NSOperationQueue mainQueue]
+        usingBlock:^(NSNotification *n) { takeOver(); }];
 }
