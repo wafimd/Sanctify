@@ -157,7 +157,7 @@ struct NowPlayingView: View {
                 if v.predictedEndTranslation.height > 300 || v.translation.height > 100 {
                     HapticEngine.shared.light()
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        dragOffset = UIScreen.main.bounds.height
+                        dragOffset = 1000
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { isPresented = false }
                 } else {
