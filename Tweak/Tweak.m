@@ -7,11 +7,11 @@
 
 static NSString *gToken = nil;
 
-typedef NSURLSessionDataTask *(*dataTaskIMP)(id, SEL, NSURLRequest *, void(^)(NSData*, NSURLResponse*, NSError*));
-static dataTaskIMP orig_dataTask;
-
-static NSURLSessionDataTask *hook_dataTask(id self, SEL _cmd, NSURLRequest *req,
-                                            void (^handler)(NSData*, NSURLResponse*, NSError*)) {
+// Hook NSURLSessionTask.resume — fires for every request regardless of which
+// HTTP client wrapper Spotify uses above NSURLSession.
+static void (*orig_resume)(id, SEL);
+static void hook_resume(id self, SEL _cmd) {
+    NSURLRequest *req = [self performSelector:@selector(currentRequest)];
     NSString *host = req.URL.host;
     if ([host hasSuffix:@"spotify.com"]) {
         NSString *auth = [req valueForHTTPHeaderField:@"Authorization"];
@@ -26,16 +26,14 @@ static NSURLSessionDataTask *hook_dataTask(id self, SEL _cmd, NSURLRequest *req,
             }
         }
     }
-    return orig_dataTask(self, _cmd, req, handler);
+    orig_resume(self, _cmd);
 }
 
 static void installTokenHook(void) {
-    Class cls = [[NSURLSession sharedSession] class];
-    SEL sel = @selector(dataTaskWithRequest:completionHandler:);
-    Method m = class_getInstanceMethod(cls, sel);
+    Method m = class_getInstanceMethod([NSURLSessionTask class], @selector(resume));
     if (m) {
-        orig_dataTask = (dataTaskIMP)method_getImplementation(m);
-        method_setImplementation(m, (IMP)hook_dataTask);
+        orig_resume = (void (*)(id, SEL))method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_resume);
     }
 }
 
@@ -339,7 +337,9 @@ static void sanctifyTakeOver(void) {
 @end
 
 static void hookSpotifySettings(void) {
-    Class cls = NSClassFromString(@"SPTSettingsViewController");
+    // EeveeSpotify hooks ProfileSettingsSection — confirmed from dylib strings
+    Class cls = NSClassFromString(@"ProfileSettingsSection");
+    if (!cls) cls = NSClassFromString(@"RootSettingsViewController");
     if (!cls) return;
 
     SEL sel = @selector(viewDidLoad);
