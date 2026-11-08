@@ -59,9 +59,11 @@ final class AppState: ObservableObject {
     }
 
     private func loadLibrary() async {
-        async let f: () = { self.featured = await self.api.fetchFeatured() }()
-        async let p: () = { self.userPlaylists = await self.api.fetchUserPlaylists() }()
-        _ = await (f, p)
+        async let f = api.fetchFeatured()
+        async let p = api.fetchUserPlaylists()
+        let (newFeatured, newPlaylists) = await (f, p)
+        featured = newFeatured
+        userPlaylists = newPlaylists
     }
 
     private func startPolling() {
