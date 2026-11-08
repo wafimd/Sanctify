@@ -21,6 +21,51 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
+      - name: Generate app icon
+        run: |
+          python3 - <<'EOF'
+import struct, zlib
+
+def png(w, h, pixels):
+    def chunk(tag, data):
+        c = zlib.crc32(tag + data) & 0xffffffff
+        return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', c)
+    raw = b''.join(b'\x00' + bytes([p for px in row for p in px]) for row in pixels)
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw, 9))
+            + chunk(b'IEND', b''))
+
+size = 1024
+pixels = []
+cx, cy = size / 2, size / 2
+for y in range(size):
+    row = []
+    for x in range(size):
+        # Red-to-pink gradient (Apple Music style)
+        t = ((x / size) + (y / size)) / 2
+        r = int(252 - t * 60)
+        g = int(20  + t * 20)
+        b = int(55  + t * 30)
+        # White music note (eighth note shape)
+        nx, ny = (x - cx) / size, (y - cy) / size
+        # Stem: thin vertical bar right of centre
+        stem = (-0.03 < nx < 0.01) and (-0.28 < ny < 0.08)
+        # Note head: small oval lower-left
+        head = ((nx + 0.07)**2 / 0.0025 + (ny - 0.10)**2 / 0.0012) < 1
+        # Flag: curved at top of stem
+        flag = (0.0 < nx < 0.10) and (-0.28 < ny < -0.14) and ny < -0.28 + (nx / 0.10) * 0.14
+        if stem or head or flag:
+            row.append((255, 255, 255))
+        else:
+            row.append((r, g, b))
+    pixels.append(row)
+
+with open('Sanctify/Assets.xcassets/AppIcon.appiconset/icon.png', 'wb') as f:
+    f.write(png(size, size, pixels))
+print("Icon generated.")
+EOF
+
       - name: Generate Xcode project
         run: xcodegen generate
 

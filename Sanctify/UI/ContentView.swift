@@ -5,12 +5,45 @@ struct RootView: View {
     @ObservedObject var engine = SpotifyWebEngine.shared
 
     var body: some View {
-        if !engine.isLoggedIn && !engine.webPlayerReady {
-            LoginView()
-        } else {
-            MainView()
+        ZStack {
+            // WebView always lives here — visible for login, 1pt hidden after
+            SpotifyWebViewWrapper(webView: engine.webView)
+                .frame(
+                    width:  engine.webPlayerReady ? 1 : nil,
+                    height: engine.webPlayerReady ? 1 : nil
+                )
+                .opacity(engine.webPlayerReady ? 0 : 1)
+                .allowsHitTesting(!engine.webPlayerReady)
+                .ignoresSafeArea()
+
+            if !engine.webPlayerReady {
+                // Login prompt overlay
+                VStack(spacing: 16) {
+                    Spacer()
+                    Text("Sanctify")
+                        .font(.system(size: 32, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("Sign in to Spotify above to continue")
+                        .font(.system(size: 15))
+                        .foregroundColor(.white.opacity(0.5))
+                    Spacer().frame(height: 40)
+                }
+                .background(Color.black.opacity(0.0))
+            } else {
+                MainView()
+                    .environmentObject(state)
+                    .transition(.opacity)
+            }
         }
+        .background(Color.black.ignoresSafeArea())
+        .animation(.easeInOut(duration: 0.4), value: engine.webPlayerReady)
     }
+}
+
+struct SpotifyWebViewWrapper: UIViewRepresentable {
+    let webView: WKWebView
+    func makeUIView(context: Context) -> WKWebView { webView }
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
 struct MainView: View {
@@ -20,10 +53,8 @@ struct MainView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Tab content
             TabContent(selectedTab: selectedTab)
 
-            // Mini player + tab bar stack
             VStack(spacing: 8) {
                 if state.currentTrack != nil {
                     MiniPlayer()
@@ -35,7 +66,6 @@ struct MainView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
-                // Tab bar
                 HStack(spacing: 0) {
                     ForEach(tabs.indices, id: \.self) { i in
                         Button {
@@ -69,9 +99,9 @@ struct MainView: View {
     }
 
     private let tabs: [(label: String, icon: String, activeIcon: String)] = [
-        ("Home",    "house",            "house.fill"),
-        ("Search",  "magnifyingglass",  "magnifyingglass"),
-        ("Library", "music.note.list",  "music.note.list"),
+        ("Home",    "house",           "house.fill"),
+        ("Search",  "magnifyingglass", "magnifyingglass"),
+        ("Library", "music.note.list", "music.note.list"),
     ]
 }
 
