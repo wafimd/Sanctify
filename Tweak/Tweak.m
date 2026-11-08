@@ -1,19 +1,22 @@
 #import <UIKit/UIKit.h>
 
-static UIWindow *activeWindow(void) {
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        UIWindowScene *ws = (UIWindowScene *)scene;
-        for (UIWindow *w in ws.windows) {
-            if (w.isKeyWindow) return w;
-        }
-    }
-    return UIApplication.sharedApplication.windows.firstObject;
-}
+static UIWindow *gAlertWindow = nil;
 
 static void showAlert(void) {
-    UIWindow *window = activeWindow();
-    if (!window.rootViewController) return;
+    UIWindowScene *scene = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]] &&
+            s.activationState == UISceneActivationStateForegroundActive) {
+            scene = (UIWindowScene *)s;
+            break;
+        }
+    }
+    if (!scene) return;
+
+    gAlertWindow = [[UIWindow alloc] initWithWindowScene:scene];
+    gAlertWindow.rootViewController = [UIViewController new];
+    gAlertWindow.windowLevel = UIWindowLevelAlert + 1;
+    [gAlertWindow makeKeyAndVisible];
 
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:@"Sanctify"
@@ -23,9 +26,9 @@ static void showAlert(void) {
     [alert addAction:[UIAlertAction
         actionWithTitle:@"OK"
         style:UIAlertActionStyleDefault
-        handler:nil]];
+        handler:^(UIAlertAction *a) { gAlertWindow = nil; }]];
 
-    [window.rootViewController presentViewController:alert animated:YES completion:nil];
+    [gAlertWindow.rootViewController presentViewController:alert animated:YES completion:nil];
 }
 
 __attribute__((constructor))
