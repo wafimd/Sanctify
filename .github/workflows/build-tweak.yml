@@ -71,6 +71,7 @@ jobs:
           ./insert_dylib_bin --strip-codesig \
             @executable_path/Frameworks/SanctifyTweak.dylib \
             "$APP/Spotify"
+          mv "$APP/Spotify_patched" "$APP/Spotify"
           echo "=== Load commands check ==="
           otool -l "$APP/Spotify" | grep -A2 SanctifyTweak || echo "WARNING: load command not found"
           echo "=== Frameworks dir ==="
