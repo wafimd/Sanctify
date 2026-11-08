@@ -3,13 +3,12 @@ import WebKit
 
 struct RootView: View {
     @EnvironmentObject var state: AppState
-    @ObservedObject var auth = SpotifyAuth.shared
     @ObservedObject var engine = SpotifyWebEngine.shared
 
     var body: some View {
         ZStack {
-            // Web player: full-screen visible while loading (user may need to sign in),
-            // then collapses to 1×1 background once ready.
+            // Web player: full-screen and interactive until Spotify session is detected,
+            // then collapses to 1×1 silent background once a Bearer token is captured.
             SpotifyWebViewWrapper(webView: engine.webView)
                 .frame(
                     width:  engine.webPlayerReady ? 1 : nil,
@@ -19,12 +18,7 @@ struct RootView: View {
                 .allowsHitTesting(!engine.webPlayerReady)
                 .ignoresSafeArea()
 
-            if !auth.isAuthenticated {
-                // PKCE login screen on top of web player
-                LoginView()
-                    .transition(.opacity)
-            } else if !engine.webPlayerReady {
-                // Web player is visible beneath — show a label so user knows what to do
+            if !engine.webPlayerReady {
                 VStack {
                     HStack {
                         Spacer()
@@ -46,7 +40,6 @@ struct RootView: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
-        .animation(.easeInOut(duration: 0.4), value: auth.isAuthenticated)
         .animation(.easeInOut(duration: 0.4), value: engine.webPlayerReady)
     }
 }
@@ -55,87 +48,6 @@ struct SpotifyWebViewWrapper: UIViewRepresentable {
     let webView: WKWebView
     func makeUIView(context: Context) -> WKWebView { webView }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
-}
-
-struct LoginView: View {
-    @ObservedObject var auth = SpotifyAuth.shared
-
-    var body: some View {
-        ZStack {
-            LiquidBackground()
-
-            VStack(spacing: 0) {
-                Spacer()
-
-                VStack(spacing: 16) {
-                    ZStack {
-                        Circle()
-                            .fill(LinearGradient(
-                                colors: [Color(red: 0.85, green: 0.1, blue: 0.3),
-                                         Color(red: 0.6, green: 0.05, blue: 0.5)],
-                                startPoint: .topLeading, endPoint: .bottomTrailing))
-                            .frame(width: 90, height: 90)
-                        Image(systemName: "music.note")
-                            .font(.system(size: 42, weight: .semibold))
-                            .foregroundColor(.white)
-                    }
-                    Text("Sanctify")
-                        .font(.system(size: 34, weight: .bold))
-                        .foregroundColor(.white)
-                    Text("Connect your Spotify account to continue")
-                        .font(.system(size: 15))
-                        .foregroundColor(.white.opacity(0.55))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
-                }
-                .padding(.bottom, 52)
-
-                if let error = auth.authError {
-                    Text(error)
-                        .font(.system(size: 13))
-                        .foregroundColor(Color(red: 1, green: 0.4, blue: 0.4))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                        .padding(.bottom, 20)
-                }
-
-                Button {
-                    auth.signIn()
-                } label: {
-                    HStack(spacing: 10) {
-                        if auth.isAuthenticating {
-                            ProgressView().tint(.white).scaleEffect(0.85)
-                        }
-                        Text(auth.isAuthenticating ? "Connecting…" : "Sign in with Spotify")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundColor(.white)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(
-                        LinearGradient(
-                            colors: [Color(red: 0.85, green: 0.1, blue: 0.3),
-                                     Color(red: 0.6, green: 0.05, blue: 0.5)],
-                            startPoint: .leading, endPoint: .trailing),
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-                .disabled(auth.isAuthenticating)
-                .padding(.horizontal, 28)
-                .padding(.bottom, 16)
-
-                Button {
-                    auth.signOut()
-                } label: {
-                    Text("Use a different account")
-                        .font(.system(size: 13))
-                        .foregroundColor(.white.opacity(0.35))
-                }
-
-                Spacer()
-                Spacer()
-            }
-        }
-    }
 }
 
 struct MainView: View {
