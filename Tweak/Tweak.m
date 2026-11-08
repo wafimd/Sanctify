@@ -5,24 +5,42 @@
 
 static NSString *gToken = nil;
 
-static void (*orig_setValue)(id, SEL, NSString *, NSString *);
-static void hook_setValue(id self, SEL _cmd, NSString *value, NSString *field) {
-    if ([field isEqualToString:@"Authorization"] && [value hasPrefix:@"Bearer "]) {
-        NSString *tok = [value substringFromIndex:7];
-        if (![tok isEqualToString:gToken]) {
-            gToken = tok;
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"SanctifyTokenReady" object:nil];
+// Hook NSURLSession task creation so we see both URL and headers together.
+// We only trust the token from requests going to api.spotify.com.
+typedef NSURLSessionDataTask *(*dataTaskIMP)(id, SEL, NSURLRequest *, void(^)(NSData*, NSURLResponse*, NSError*));
+static dataTaskIMP orig_dataTask;
+
+static NSURLSessionDataTask *hook_dataTask(id self, SEL _cmd, NSURLRequest *req,
+                                            void (^handler)(NSData*, NSURLResponse*, NSError*)) {
+    NSString *host = req.URL.host;
+    if ([host isEqualToString:@"api.spotify.com"]) {
+        NSString *auth = [req valueForHTTPHeaderField:@"Authorization"];
+        if ([auth hasPrefix:@"Bearer "]) {
+            NSString *tok = [auth substringFromIndex:7];
+            if (![tok isEqualToString:gToken]) {
+                gToken = tok;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:@"SanctifyTokenReady" object:nil];
+                });
+            }
         }
     }
-    orig_setValue(self, _cmd, value, field);
+    return orig_dataTask(self, _cmd, req, handler);
 }
 
 static void installTokenHook(void) {
-    Method m = class_getInstanceMethod([NSMutableURLRequest class],
-                                       @selector(setValue:forHTTPHeaderField:));
-    orig_setValue = (void *)method_getImplementation(m);
-    method_setImplementation(m, (IMP)hook_setValue);
+    Class cls = NSClassFromString(@"__NSURLSessionLocal") ?: [NSURLSession class];
+    SEL sel = @selector(dataTaskWithRequest:completionHandler:);
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) {
+        // fallback: hook on shared session's actual class
+        m = class_getInstanceMethod([[NSURLSession sharedSession] class], sel);
+    }
+    if (m) {
+        orig_dataTask = (dataTaskIMP)method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_dataTask);
+    }
 }
 
 // ── Spotify Web API fetch ─────────────────────────────────────────────────────
@@ -68,8 +86,7 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
     NSArray *artists = item[@"artists"];
     NSDictionary *owner = item[@"owner"];
     if (artists.count)
-        self.detailTextLabel.text = [artists valueForKeyPath:@"name.@component.self"] ?:
-            [[artists valueForKey:@"name"] componentsJoinedByString:@", "];
+        self.detailTextLabel.text = [[artists valueForKey:@"name"] componentsJoinedByString:@", "];
     else if (owner)
         self.detailTextLabel.text = owner[@"display_name"];
     else
