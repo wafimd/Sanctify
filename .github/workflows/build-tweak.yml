@@ -1,0 +1,78 @@
+name: Build Tweaked Spotify IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: 'Direct download URL for the decrypted Spotify IPA'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          XCODE=$(ls /Applications/ | grep -E '^Xcode' | sort -V | tail -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          xcodebuild -version
+
+      - name: Build insert_dylib
+        run: |
+          git clone --depth 1 https://github.com/Tyilo/insert_dylib
+          cd insert_dylib
+          xcodebuild -project insert_dylib.xcodeproj -scheme insert_dylib \
+            -configuration Release SYMROOT=build 2>&1 | tail -5
+          cp build/Release/insert_dylib ../insert_dylib
+          cd ..
+
+      - name: Build tweak dylib
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          clang -arch arm64 \
+            -isysroot "$SDK" \
+            -mios-version-min=16.0 \
+            -shared -fmodules \
+            -framework UIKit \
+            -framework Foundation \
+            -o SanctifyTweak.dylib \
+            Tweak/Tweak.m
+          install_name_tool \
+            -id @executable_path/Frameworks/SanctifyTweak.dylib \
+            SanctifyTweak.dylib
+          echo "Dylib built:"
+          ls -lh SanctifyTweak.dylib
+
+      - name: Download Spotify IPA
+        run: |
+          curl -L "${{ github.event.inputs.ipa_url }}" -o Spotify.ipa
+          ls -lh Spotify.ipa
+
+      - name: Extract IPA
+        run: unzip -o Spotify.ipa -d extracted > /dev/null
+
+      - name: Inject dylib into Spotify binary
+        run: |
+          APP="extracted/Payload/Spotify.app"
+          cp SanctifyTweak.dylib "$APP/Frameworks/"
+          ./insert_dylib --strip-codesig \
+            @executable_path/Frameworks/SanctifyTweak.dylib \
+            "$APP/Spotify"
+
+      - name: Repackage IPA
+        run: |
+          cd extracted
+          zip -qr ../SanctifySpotify.ipa Payload/
+          cd ..
+          ls -lh SanctifySpotify.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SanctifySpotify-Step1
+          path: SanctifySpotify.ipa
+          retention-days: 7
