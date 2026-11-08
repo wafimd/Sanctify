@@ -55,11 +55,7 @@ struct MainView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(.white.opacity(0.08), lineWidth: 0.5)
-                )
+                .glassEffect(in: Capsule())
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             }

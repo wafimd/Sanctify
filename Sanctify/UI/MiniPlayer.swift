@@ -56,10 +56,6 @@ struct MiniPlayer: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 0.5)
-        )
+        .glassEffect(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
