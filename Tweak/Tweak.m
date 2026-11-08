@@ -4,25 +4,47 @@
 // ── Token capture ─────────────────────────────────────────────────────────────
 
 static NSString *gToken = nil;
+static NSMutableSet *gSeenTokens = nil;
 
-// Hook NSURLSession task creation so we see both URL and headers together.
-// We only trust the token from requests going to api.spotify.com.
+// Capture Bearer tokens from every *.spotify.com request.
+// Validate each new token against the Web API; keep the first that returns 200.
+static void tryToken(NSString *tok) {
+    if (!tok || [gSeenTokens containsObject:tok]) return;
+    [gSeenTokens addObject:tok];
+
+    NSURL *url = [NSURL URLWithString:@"https://api.spotify.com/v1/me"];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", tok]
+       forHTTPHeaderField:@"Authorization"];
+    // tag so our hook ignores this probe
+    [req setValue:@"1" forHTTPHeaderField:@"X-Sanctify-Probe"];
+
+    NSURLSession *s = [NSURLSession sharedSession];
+    [[s dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)r;
+        if (http.statusCode == 200 && !gToken) {
+            gToken = tok;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:@"SanctifyTokenReady" object:nil];
+            });
+        }
+    }] resume];
+}
+
 typedef NSURLSessionDataTask *(*dataTaskIMP)(id, SEL, NSURLRequest *, void(^)(NSData*, NSURLResponse*, NSError*));
 static dataTaskIMP orig_dataTask;
 
 static NSURLSessionDataTask *hook_dataTask(id self, SEL _cmd, NSURLRequest *req,
                                             void (^handler)(NSData*, NSURLResponse*, NSError*)) {
-    NSString *host = req.URL.host;
-    if ([host isEqualToString:@"api.spotify.com"]) {
-        NSString *auth = [req valueForHTTPHeaderField:@"Authorization"];
-        if ([auth hasPrefix:@"Bearer "]) {
-            NSString *tok = [auth substringFromIndex:7];
-            if (![tok isEqualToString:gToken]) {
-                gToken = tok;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [[NSNotificationCenter defaultCenter]
-                        postNotificationName:@"SanctifyTokenReady" object:nil];
-                });
+    // Skip our own probe requests
+    if (![req valueForHTTPHeaderField:@"X-Sanctify-Probe"]) {
+        NSString *host = req.URL.host;
+        if ([host hasSuffix:@"spotify.com"]) {
+            NSString *auth = [req valueForHTTPHeaderField:@"Authorization"];
+            if ([auth hasPrefix:@"Bearer "]) {
+                NSString *tok = [auth substringFromIndex:7];
+                dispatch_async(dispatch_get_global_queue(0, 0), ^{ tryToken(tok); });
             }
         }
     }
@@ -30,13 +52,10 @@ static NSURLSessionDataTask *hook_dataTask(id self, SEL _cmd, NSURLRequest *req,
 }
 
 static void installTokenHook(void) {
-    Class cls = NSClassFromString(@"__NSURLSessionLocal") ?: [NSURLSession class];
+    gSeenTokens = [NSMutableSet new];
+    Class cls = [[NSURLSession sharedSession] class];
     SEL sel = @selector(dataTaskWithRequest:completionHandler:);
     Method m = class_getInstanceMethod(cls, sel);
-    if (!m) {
-        // fallback: hook on shared session's actual class
-        m = class_getInstanceMethod([[NSURLSession sharedSession] class], sel);
-    }
     if (m) {
         orig_dataTask = (dataTaskIMP)method_getImplementation(m);
         method_setImplementation(m, (IMP)hook_dataTask);
