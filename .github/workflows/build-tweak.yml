@@ -23,11 +23,11 @@ jobs:
 
       - name: Build insert_dylib
         run: |
-          git clone --depth 1 https://github.com/Tyilo/insert_dylib
-          cd insert_dylib
+          git clone --depth 1 https://github.com/Tyilo/insert_dylib idylib_src
+          cd idylib_src
           xcodebuild -project insert_dylib.xcodeproj -scheme insert_dylib \
             -configuration Release SYMROOT=build 2>&1 | tail -5
-          cp build/Release/insert_dylib ../insert_dylib
+          cp build/Release/insert_dylib ../insert_dylib_bin
           cd ..
 
       - name: Build tweak dylib
@@ -59,7 +59,7 @@ jobs:
         run: |
           APP="extracted/Payload/Spotify.app"
           cp SanctifyTweak.dylib "$APP/Frameworks/"
-          ./insert_dylib --strip-codesig \
+          ./insert_dylib_bin --strip-codesig \
             @executable_path/Frameworks/SanctifyTweak.dylib \
             "$APP/Spotify"
 
