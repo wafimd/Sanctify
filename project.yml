@@ -2,7 +2,7 @@ name: Sanctify
 options:
   bundleIdPrefix: com.wafi
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "26.0"
   createIntermediateGroups: true
   xcodeVersion: "15.0"
 
@@ -32,7 +32,7 @@ targets:
       SWIFT_VERSION: "5.9"
       PRODUCT_BUNDLE_IDENTIFIER: com.wafi.Sanctify
       TARGETED_DEVICE_FAMILY: "1"
-      IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+      IPHONEOS_DEPLOYMENT_TARGET: "26.0"
       ENABLE_BITCODE: "NO"
       DEBUG_INFORMATION_FORMAT: dwarf
       CODE_SIGN_IDENTITY: ""
