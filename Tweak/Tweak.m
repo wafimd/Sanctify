@@ -1,39 +1,52 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-
-// ── Token capture ─────────────────────────────────────────────────────────────
-// No probe validation — just grab the first Bearer token from any *.spotify.com
-// request. If an API call returns 401 we'll refresh on the next token change.
+#include <string.h>
 
 static NSString *gToken = nil;
 
-// Hook NSURLSessionTask.resume — fires for every request regardless of which
-// HTTP client wrapper Spotify uses above NSURLSession.
-static void (*orig_resume)(id, SEL);
-static void hook_resume(id self, SEL _cmd) {
-    NSURLRequest *req = [self performSelector:@selector(currentRequest)];
-    NSString *host = req.URL.host;
-    if ([host hasSuffix:@"spotify.com"]) {
-        NSString *auth = [req valueForHTTPHeaderField:@"Authorization"];
-        if ([auth hasPrefix:@"Bearer "]) {
-            NSString *tok = [auth substringFromIndex:7];
-            if (![tok isEqualToString:gToken]) {
-                gToken = tok;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [[NSNotificationCenter defaultCenter]
-                        postNotificationName:@"SanctifyTokenReady" object:nil];
-                });
-            }
-        }
+// ── Token capture via OauthAccessTokenBridge ──────────────────────────────────
+// EeveeSpotify's approach: hook the Swift OAuth bridge class directly instead of
+// intercepting HTTP headers. Fires as soon as Spotify's auth system initializes.
+
+static NSString *(*orig_tokenGetter)(id, SEL);
+static NSString *hook_tokenGetter(id self, SEL _cmd) {
+    NSString *tok = orig_tokenGetter ? orig_tokenGetter(self, _cmd) : nil;
+    if (tok.length > 0 && ![tok isEqualToString:gToken]) {
+        gToken = tok;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"SanctifyTokenReady" object:nil];
+        });
     }
-    orig_resume(self, _cmd);
+    return tok;
 }
 
 static void installTokenHook(void) {
-    Method m = class_getInstanceMethod([NSURLSessionTask class], @selector(resume));
-    if (m) {
-        orig_resume = (void (*)(id, SEL))method_getImplementation(m);
-        method_setImplementation(m, (IMP)hook_resume);
+    // The Swift mangled name is required — NSClassFromString(@"OauthAccessTokenBridge") returns nil.
+    // Mangled name confirmed from EeveeSpotify symtab (01_auth_flow.md § 3).
+    // Fallback scans all registered classes in case the discriminator changes in a future build.
+    Class cls = NSClassFromString(@"_TtC24Connectivity_SessionImplP33_831B98CC28223E431E21CD27ADD20AF222OauthAccessTokenBridge");
+    if (!cls) {
+        int count = objc_getClassList(NULL, 0);
+        Class *buf = (Class *)malloc(sizeof(Class) * count);
+        objc_getClassList(buf, count);
+        for (int i = 0; i < count; i++) {
+            const char *name = class_getName(buf[i]);
+            if (name && strstr(name, "OauthAccessTokenBridge")) {
+                cls = buf[i];
+                break;
+            }
+        }
+        free(buf);
+    }
+    if (!cls) return;
+    SEL candidates[] = { @selector(accessToken), @selector(token) };
+    for (int i = 0; i < 2; i++) {
+        Method m = class_getInstanceMethod(cls, candidates[i]);
+        if (!m) continue;
+        orig_tokenGetter = (NSString *(*)(id, SEL))method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_tokenGetter);
+        return;
     }
 }
 
@@ -53,6 +66,13 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
         NSArray *items = json[@"items"] ?: json[@"artists"][@"items"];
         if (items) dispatch_async(dispatch_get_main_queue(), ^{ callback(items); });
     }] resume];
+}
+
+static void sanctifyPlay(NSString *uri) {
+    if (!uri.length) return;
+    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:uri]
+                                       options:@{}
+                                   completionHandler:nil];
 }
 
 // ── Item cell ─────────────────────────────────────────────────────────────────
@@ -149,9 +169,16 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
     return cell;
 }
 
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+    sanctifyPlay(self.rows[ip.row][@"uri"]);
+}
+
 @end
 
 // ── Home VC ───────────────────────────────────────────────────────────────────
+
+static const void *kCardURIKey = &kCardURIKey;
 
 @interface SanctifyHomeVC : UIViewController
 @property (nonatomic) UIScrollView *scroll;
@@ -232,11 +259,21 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
         name.numberOfLines = 2;
         [card addSubview:name];
 
+        if (item[@"uri"]) {
+            objc_setAssociatedObject(card, kCardURIKey, item[@"uri"], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            [card addGestureRecognizer:[[UITapGestureRecognizer alloc]
+                initWithTarget:self action:@selector(cardTapped:)]];
+        }
+
         [self.scroll addSubview:card];
         x += itemW + 12;
     }
     y += itemH + 20;
     self.scroll.contentSize = CGSizeMake(W, y);
+}
+
+- (void)cardTapped:(UITapGestureRecognizer *)gr {
+    sanctifyPlay(objc_getAssociatedObject(gr.view, kCardURIKey));
 }
 
 @end
@@ -314,8 +351,6 @@ static void sanctifyTakeOver(void) {
 }
 
 // ── Settings injection ────────────────────────────────────────────────────────
-// Hook SPTSettingsViewController to add an "Open Sanctify" row in Spotify's
-// own settings, exactly like EeveeSpotify does.
 
 @interface SanctifyLauncher : NSObject
 + (instancetype)shared;
@@ -337,9 +372,9 @@ static void sanctifyTakeOver(void) {
 @end
 
 static void hookSpotifySettings(void) {
-    // EeveeSpotify hooks ProfileSettingsSection — confirmed from dylib strings
-    Class cls = NSClassFromString(@"ProfileSettingsSection");
-    if (!cls) cls = NSClassFromString(@"RootSettingsViewController");
+    // SPTSettingsViewController is legacy and no longer exists in modern Spotify.
+    // RootSettingsViewController is the current class (confirmed from EeveeSpotify dossier § 2.8).
+    Class cls = NSClassFromString(@"RootSettingsViewController");
     if (!cls) return;
 
     SEL sel = @selector(viewDidLoad);
@@ -347,8 +382,8 @@ static void hookSpotifySettings(void) {
     if (!m) return;
 
     IMP orig = method_getImplementation(m);
-    IMP hook = imp_implementationWithBlock(^(UIViewController *self) {
-        ((void (*)(id, SEL))orig)(self, sel);
+    IMP hook = imp_implementationWithBlock(^(UIViewController *vc) {
+        ((void (*)(id, SEL))orig)(vc, sel);
 
         UIBarButtonItem *btn = [[UIBarButtonItem alloc]
             initWithTitle:@"⚡ Sanctify"
@@ -356,7 +391,7 @@ static void hookSpotifySettings(void) {
                    target:[SanctifyLauncher shared]
                    action:@selector(openSanctify)];
         btn.tintColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:1.0];
-        self.navigationItem.rightBarButtonItem = btn;
+        vc.navigationItem.rightBarButtonItem = btn;
     });
     method_setImplementation(m, hook);
 }
@@ -368,12 +403,17 @@ static void SanctifyInit(void) {
     installTokenHook();
     hookSpotifySettings();
 
+    // Auto-takeover only if user has already opted in via the settings button.
+    // First-time users go through Settings → ⚡ Sanctify instead, which avoids
+    // any timing conflict with iOS permission prompts on fresh installs.
     [[NSNotificationCenter defaultCenter]
         addObserverForName:@"SanctifyTokenReady"
         object:nil
         queue:[NSOperationQueue mainQueue]
         usingBlock:^(NSNotification *n) {
-            if ([[NSUserDefaults standardUserDefaults] boolForKey:@"SanctifyAutoLaunch"])
-                sanctifyTakeOver();
+            if (![[NSUserDefaults standardUserDefaults] boolForKey:@"SanctifyAutoLaunch"]) return;
+            // 1.5s delay lets Spotify finish rootViewController init before we replace it.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{ sanctifyTakeOver(); });
         }];
 }
