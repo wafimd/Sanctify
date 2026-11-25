@@ -3,28 +3,28 @@
 #include <string.h>
 
 static NSString *gToken = nil;
+static NSString *gLastError = nil;
 
-// ── Token capture via OauthAccessTokenBridge ──────────────────────────────────
-// EeveeSpotify's approach: hook the Swift OAuth bridge class directly instead of
-// intercepting HTTP headers. Fires as soon as Spotify's auth system initializes.
+static void notifyTokenReady(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"SanctifyTokenReady" object:nil];
+    });
+}
+
+// ── Token capture 1: OauthAccessTokenBridge (fires early at auth init) ────────
 
 static NSString *(*orig_tokenGetter)(id, SEL);
 static NSString *hook_tokenGetter(id self, SEL _cmd) {
     NSString *tok = orig_tokenGetter ? orig_tokenGetter(self, _cmd) : nil;
     if (tok.length > 0 && ![tok isEqualToString:gToken]) {
         gToken = tok;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"SanctifyTokenReady" object:nil];
-        });
+        notifyTokenReady();
     }
     return tok;
 }
 
 static void installTokenHook(void) {
-    // The Swift mangled name is required — NSClassFromString(@"OauthAccessTokenBridge") returns nil.
-    // Mangled name confirmed from EeveeSpotify symtab (01_auth_flow.md § 3).
-    // Fallback scans all registered classes in case the discriminator changes in a future build.
     Class cls = NSClassFromString(@"_TtC24Connectivity_SessionImplP33_831B98CC28223E431E21CD27ADD20AF222OauthAccessTokenBridge");
     if (!cls) {
         int count = objc_getClassList(NULL, 0);
@@ -50,21 +50,60 @@ static void installTokenHook(void) {
     }
 }
 
+// ── Token capture 2: NSURLSessionTask.resume (fires on every Spotify request) ─
+// Intercepts the Authorization header from outgoing requests — more reliable
+// than waiting for the bridge selector to be called.
+
+static IMP orig_taskResume = nil;
+static void hook_taskResume(NSURLSessionTask *self, SEL _cmd) {
+    NSString *auth = self.originalRequest.allHTTPHeaderFields[@"Authorization"];
+    if ([auth hasPrefix:@"Bearer "]) {
+        NSString *tok = [auth substringFromIndex:7];
+        if (tok.length > 0 && ![tok isEqualToString:gToken]) {
+            gToken = tok;
+            notifyTokenReady();
+        }
+    }
+    ((void (*)(id, SEL))orig_taskResume)(self, _cmd);
+}
+
+static void installURLSessionHook(void) {
+    Class cls = [NSURLSessionTask class];
+    SEL sel = @selector(resume);
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+    orig_taskResume = method_getImplementation(m);
+    method_setImplementation(m, (IMP)hook_taskResume);
+}
+
 // ── Spotify Web API fetch ─────────────────────────────────────────────────────
 
-static void spotifyGET(NSString *path, void (^callback)(NSArray *items)) {
-    if (!gToken) return;
+static void spotifyGET(NSString *path, void (^callback)(NSArray *items, NSString *error)) {
+    if (!gToken) {
+        dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, @"No token yet"); });
+        return;
+    }
     NSURL *url = [NSURL URLWithString:
         [NSString stringWithFormat:@"https://api.spotify.com/v1%@", path]];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     [req setValue:[NSString stringWithFormat:@"Bearer %@", gToken]
        forHTTPHeaderField:@"Authorization"];
-    NSURLSession *session = [NSURLSession sharedSession];
-    [[session dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-        if (!d) return;
+    [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        NSInteger status = [(NSHTTPURLResponse *)r statusCode];
+        if (e || !d) {
+            NSString *msg = [NSString stringWithFormat:@"Network error: %@", e.localizedDescription];
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, msg); });
+            return;
+        }
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
-        NSArray *items = json[@"items"] ?: json[@"artists"][@"items"];
-        if (items) dispatch_async(dispatch_get_main_queue(), ^{ callback(items); });
+        NSArray *items = json[@"items"];
+        if (items) {
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(items, nil); });
+        } else {
+            NSString *msg = [NSString stringWithFormat:@"HTTP %ld: %@",
+                (long)status, json[@"error"][@"message"] ?: [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]];
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, msg); });
+        }
     }] resume];
 }
 
@@ -153,11 +192,15 @@ static void sanctifyPlay(NSString *uri) {
 }
 
 - (void)load {
-    if (!gToken || !self.endpoint) return;
-    spotifyGET(self.endpoint, ^(NSArray *items) {
-        [self.rows removeAllObjects];
-        [self.rows addObjectsFromArray:items];
-        [self.table reloadData];
+    if (!self.endpoint) return;
+    spotifyGET(self.endpoint, ^(NSArray *items, NSString *error) {
+        if (items) {
+            [self.rows removeAllObjects];
+            [self.rows addObjectsFromArray:items];
+            [self.table reloadData];
+        } else {
+            self.title = [NSString stringWithFormat:@"%@ (%@)", self.title, error ?: @"empty"];
+        }
     });
 }
 
@@ -182,6 +225,7 @@ static const void *kCardURIKey = &kCardURIKey;
 
 @interface SanctifyHomeVC : UIViewController
 @property (nonatomic) UIScrollView *scroll;
+@property (nonatomic) UILabel *debugLabel;
 @end
 
 @implementation SanctifyHomeVC
@@ -191,18 +235,45 @@ static const void *kCardURIKey = &kCardURIKey;
     self.title = @"Home";
     self.view.backgroundColor = [UIColor colorWithWhite:0.05 alpha:1];
 
+    // Debug label — shows token status and errors so we can diagnose silently-failing API calls
+    self.debugLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 36)];
+    self.debugLabel.textAlignment = NSTextAlignmentCenter;
+    self.debugLabel.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
+    self.debugLabel.textColor = [UIColor colorWithRed:1 green:0.8 blue:0 alpha:1];
+    self.debugLabel.numberOfLines = 2;
+    self.debugLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [self.view addSubview:self.debugLabel];
+    [self updateDebug:@"Waiting for token…"];
+
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
+        target:self action:@selector(reload)];
+
     [[NSNotificationCenter defaultCenter]
         addObserverForName:@"SanctifyTokenReady" object:nil queue:[NSOperationQueue mainQueue]
-        usingBlock:^(NSNotification *n) { [self loadAll]; }];
+        usingBlock:^(NSNotification *n) { [self reload]; }];
 
-    if (gToken) [self loadAll];
+    if (gToken) [self reload];
+}
+
+- (void)updateDebug:(NSString *)msg {
+    NSString *tokenStatus = gToken ? [NSString stringWithFormat:@"token: %@…", [gToken substringToIndex:MIN(8, gToken.length)]] : @"token: nil";
+    self.debugLabel.text = [NSString stringWithFormat:@"%@ | %@", tokenStatus, msg];
+}
+
+- (void)reload {
+    if (self.scroll) { [self.scroll removeFromSuperview]; self.scroll = nil; }
+    [self updateDebug:@"Loading…"];
+    [self loadAll];
 }
 
 - (void)loadAll {
-    spotifyGET(@"/me/player/recently-played?limit=10", ^(NSArray *items) {
+    spotifyGET(@"/me/player/recently-played?limit=10", ^(NSArray *items, NSString *error) {
+        if (error) { [self updateDebug:[NSString stringWithFormat:@"recently-played: %@", error]]; return; }
         [self addSection:@"Recently Played" items:items keyPath:@"track"];
     });
-    spotifyGET(@"/me/top/artists?limit=10", ^(NSArray *items) {
+    spotifyGET(@"/me/top/artists?limit=10", ^(NSArray *items, NSString *error) {
+        if (error) { [self updateDebug:[NSString stringWithFormat:@"top-artists: %@", error]]; return; }
         [self addSection:@"Your Top Artists" items:items keyPath:nil];
     });
 }
@@ -212,9 +283,12 @@ static const void *kCardURIKey = &kCardURIKey;
     if (!items.count) return;
 
     if (!self.scroll) {
-        self.scroll = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+        CGRect frame = self.view.bounds;
+        frame.origin.y = 40; frame.size.height -= 40;
+        self.scroll = [[UIScrollView alloc] initWithFrame:frame];
         self.scroll.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.view addSubview:self.scroll];
+        [self.view bringSubviewToFront:self.debugLabel];
     }
 
     CGFloat y = self.scroll.subviews.lastObject ?
@@ -401,6 +475,7 @@ static void hookSpotifySettings(void) {
 __attribute__((constructor))
 static void SanctifyInit(void) {
     installTokenHook();
+    installURLSessionHook();
     hookSpotifySettings();
 
     // Auto-takeover only if user has already opted in via the settings button.
