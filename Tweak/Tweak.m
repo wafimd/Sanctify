@@ -56,24 +56,30 @@ static void installTokenHook(void) {
 
 static IMP orig_taskResume = nil;
 static void hook_taskResume(NSURLSessionTask *self, SEL _cmd) {
-    NSString *auth = self.originalRequest.allHTTPHeaderFields[@"Authorization"];
-    if ([auth hasPrefix:@"Bearer "]) {
-        NSString *tok = [auth substringFromIndex:7];
-        if (tok.length > 0 && ![tok isEqualToString:gToken]) {
-            gToken = tok;
-            notifyTokenReady();
+    @try {
+        NSURLRequest *req = self.originalRequest;
+        if (req) {
+            NSString *auth = req.allHTTPHeaderFields[@"Authorization"];
+            if ([auth hasPrefix:@"Bearer "]) {
+                NSString *tok = [auth substringFromIndex:7];
+                if (tok.length > 0 && ![tok isEqualToString:gToken]) {
+                    gToken = tok;
+                    notifyTokenReady();
+                }
+            }
         }
-    }
-    ((void (*)(id, SEL))orig_taskResume)(self, _cmd);
+    } @catch (...) {}
+    if (orig_taskResume) ((void (*)(id, SEL))orig_taskResume)(self, _cmd);
 }
 
 static void installURLSessionHook(void) {
-    Class cls = [NSURLSessionTask class];
+    Class cls = NSClassFromString(@"NSURLSessionTask");
+    if (!cls) return;
     SEL sel = @selector(resume);
     Method m = class_getInstanceMethod(cls, sel);
     if (!m) return;
     orig_taskResume = method_getImplementation(m);
-    method_setImplementation(m, (IMP)hook_taskResume);
+    if (orig_taskResume) method_setImplementation(m, (IMP)hook_taskResume);
 }
 
 // ── Spotify Web API fetch ─────────────────────────────────────────────────────
