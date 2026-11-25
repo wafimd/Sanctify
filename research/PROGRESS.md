@@ -8,7 +8,7 @@
 | Settings button (⚡ Sanctify) | ✓ Working | Hooks `RootSettingsViewController.viewDidLoad`, adds nav bar button |
 | Auto-launch on subsequent opens | ✓ Working | `SanctifyAutoLaunch` NSUserDefaults flag; 1.5s delay after token ready |
 | Token capture via OauthAccessTokenBridge | ✓ Working | Mangled class name: `_TtC24Connectivity_SessionImplP33_831B98CC28223E431E21CD27ADD20AF222OauthAccessTokenBridge` |
-| Token capture via NSURLSessionTask.resume | ✓ Added | Fallback — fires on every Spotify network request; more reliable |
+| Token capture via NSURLSessionTask.resume | ⚠ Crashes without guards | Added `@try` wrapper and nil checks for `orig_taskResume` and `originalRequest` |
 | Full UI overlay (tab bar, home, artists, library) | ✓ Working | `SanctifyRootVC` replaces `rootViewController` |
 | Navigation, tab switching | ✓ Working | |
 
