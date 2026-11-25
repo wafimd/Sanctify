@@ -88,7 +88,7 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items, NSString
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     [req setValue:[NSString stringWithFormat:@"Bearer %@", gToken]
        forHTTPHeaderField:@"Authorization"];
-    [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
         NSInteger status = [(NSHTTPURLResponse *)r statusCode];
         if (e || !d) {
             NSString *msg = [NSString stringWithFormat:@"Network error: %@", e.localizedDescription];
@@ -104,7 +104,8 @@ static void spotifyGET(NSString *path, void (^callback)(NSArray *items, NSString
                 (long)status, json[@"error"][@"message"] ?: [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding]];
             dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, msg); });
         }
-    }] resume];
+    }];
+    [task resume];
 }
 
 static void sanctifyPlay(NSString *uri) {
